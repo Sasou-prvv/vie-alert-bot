@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 CHANNEL_ID = int(os.environ.get('CHANNEL_ID', '0'))
 
-# Mots-clés (Gardés tels quels)
+# Mots-clés
 KEYWORDS = [
     "industrie", "industriel", "production", "manufacturing", "usine", "atelier",
     "lean", "amélioration continue", "kaizen", "5s", "six sigma",
@@ -17,16 +17,27 @@ KEYWORDS = [
     "supply chain", "logistique", "achats", "procurement",
     "qualité", "qualite", "qse", "hse", "sécurité", "securite",
     "audit", "contrôle", "controle", "inspection", "conformité", "conformite",
-    "iso", "certification", "norme", "énergie", "energie", "nucleaire", "nucléaire"
+    "iso", "certification", "norme", "énergie", "energie", "nucleaire", "nucléaire",
+    "matériaux", "materiaux", "procédés", "procedes", "métallurgie", "metallurgie",
+    "composite", "polymère", "polymere", "céramique", "ceramique",
+    "traitement de surface", "peinture", "revêtement", "revetement", "coating",
+    "soudage", "usinage", "fonderie", "forge", "moulage", "assemblage",
+    "mécanique", "mecanique", "ingénierie", "ingenierie", "conception",
+    "bureau d'études", "r&d", "recherche", "développement", "developpement",
+    "simulation", "calcul", "dimensionnement", "cad", "cao", "solidworks",
+    "catia", "ansys", "abaqus"
 ]
 
-# Pays exclus (Gardés tels quels)
+# Pays exclus
 EXCLUDED_COUNTRIES = [
     "france", "allemagne", "espagne", "italie", "portugal", "belgique",
-    "maroc", "tunisie", "algerie", "algérie", "sénégal", "senegal"
+    "maroc", "tunisie", "algerie", "algérie", "sénégal", "senegal",
+    "pays-bas", "suisse", "autriche", "pologne", "roumanie", "hongrie",
+    "grèce", "grece", "suède", "suede", "norvège", "norvege", "danemark",
+    "finlande", "irlande", "luxembourg", "royaume-uni", "uk", "europe"
 ]
 
-# Simulation d'un navigateur pour ne pas être bloqué
+# Simulation d'un navigateur
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
@@ -59,7 +70,6 @@ class VIEBot(discord.Client):
         
         while not self.is_closed():
             try:
-                # On scanne la page de recherche directement
                 url = "https://mon-volontariat-international.businessfrance.fr/recherche"
                 async with aiohttp.ClientSession(headers=HEADERS) as session:
                     async with session.get(url, timeout=30) as resp:
@@ -67,7 +77,6 @@ class VIEBot(discord.Client):
                             html = await resp.text()
                             soup = BeautifulSoup(html, 'html.parser')
                             
-                            # On cherche les cartes d'offres (structure typique Civiweb)
                             offers = soup.find_all('div', class_='v-card') 
                             
                             for offer in offers:
