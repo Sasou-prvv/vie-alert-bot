@@ -15,6 +15,7 @@ class VIEBot(discord.Client):
         print(f"Bot connecté : {self.user}")
         self.loop.create_task(self.check_vie())
 
+
     async def check_vie(self):
 
         await self.wait_until_ready()
@@ -24,49 +25,51 @@ class VIEBot(discord.Client):
 
             try:
 
-                url = "https://mon-vie-via.businessfrance.fr/api/offers"
+                url = "https://www.civiweb.com/FR/offres.aspx"
 
-                async with aiohttp.ClientSession() as session:
+                headers = {
+                    "User-Agent": "Mozilla/5.0"
+                }
+
+                async with aiohttp.ClientSession(headers=headers) as session:
                     async with session.get(url) as resp:
 
-                        data = await resp.json()
-                        offers = data.get("offers", [])
+                        html = await resp.text()
+
+                        import re
+
+                        offers = re.findall(
+                            r'Offre.aspx\?idOffre=(\d+).*?>(.*?)<',
+                            html,
+                            re.S
+                        )
 
                         print(f"{len(offers)} offres trouvées")
 
-                        for offer in offers:
-
-                            offer_id = str(offer["id"])
+                        for offer_id, title in offers:
 
                             if offer_id in seen_ids:
                                 continue
 
                             seen_ids.add(offer_id)
 
-                            title = offer.get("title", "Offre VIE")
-                            country = offer.get("country", "Non précisé")
-                            company = offer.get("company", "Entreprise inconnue")
-
-                            link = f"https://mon-vie-via.businessfrance.fr/offres/{offer_id}"
+                            link = f"https://www.civiweb.com/FR/offre.aspx?idOffre={offer_id}"
 
                             embed = discord.Embed(
-                                title=title,
+                                title=title.strip(),
                                 url=link,
                                 color=0x00ff00,
                                 timestamp=datetime.utcnow()
                             )
 
-                            embed.add_field(name="Entreprise", value=company, inline=True)
-                            embed.add_field(name="Pays", value=country, inline=True)
-
-                            embed.set_footer(text="Nouvelle offre VIE")
+                            embed.set_footer(text="Nouvelle mission VIE/VIA")
 
                             await channel.send(embed=embed)
 
             except Exception as e:
                 print("Erreur :", e)
 
-            await asyncio.sleep(600)
+            await asyncio.sleep(300)
 
 
 intents = discord.Intents.default()
