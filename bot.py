@@ -42,7 +42,7 @@ class VIEBot(discord.Client):
         
         while not self.is_closed():
             try:
-                url = "https://mon-volontariat-international.businessfrance.fr/recherche"
+                url = "https://mon-vie-via.businessfrance.fr"
                 async with aiohttp.ClientSession(headers=HEADERS) as session:
                     async with session.get(url, timeout=30) as resp:
                         if resp.status == 200:
