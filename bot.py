@@ -23,50 +23,53 @@ class VIEBot(discord.Client):
         await self.wait_until_ready()
         channel = self.get_channel(CHANNEL_ID)
         
-        # On utilise une URL qui passe par un service de proxy gratuit pour éviter le ban IP de Railway
-        # Si celle-ci échoue, on testera le mode RSS.
-        url = "https://mon-vie-via.businessfrance.fr/offres/recherche"
+        # On passe par un service de rendu pour contourner le blocage IP
+        # Ce service va lire la page pour nous et nous renvoyer le texte
+        proxy_url = "https://api.allorigins.win/get?url="
+        target_url = "https://mon-vie-via.businessfrance.fr/offres/recherche"
         
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-        }
-
         while not self.is_closed():
             try:
-                print("Tentative de contournement du blocage...")
-                async with aiohttp.ClientSession(headers=headers) as session:
-                    # On ajoute un paramètre aléatoire pour éviter le cache du serveur
-                    async with session.get(f"{url}?t={int(datetime.now().timestamp())}", timeout=30) as resp:
-                        
+                print("Tentative via bypass Gateway...")
+                async with aiohttp.ClientSession() as session:
+                    # On encode l'URL cible pour passer par le proxy
+                    encoded_url = f"{proxy_url}{target_url}?t={int(datetime.now().timestamp())}"
+                    
+                    async with session.get(encoded_url, timeout=30) as resp:
                         if resp.status == 200:
-                            html = await resp.text()
-                            # On cherche les IDs d'offres
-                            found_ids = list(set(re.findall(r'/offres/(\d+)', html)))
+                            data = await resp.json()
+                            html = data.get('contents', '')
                             
-                            if not found_ids:
-                                print("Zéro offre trouvée dans le HTML (blocage JS possible).")
+                            # Extraction des IDs d'offres
+                            found_ids = list(dict.fromkeys(re.findall(r'/offres/(\d+)', html)))
                             
-                            # Au premier démarrage on en force 3
-                            to_send = found_ids[:3] if self.first_run else [i for i in found_ids if i not in seen_ids]
-                            self.first_run = False
+                            print(f"Brut : {len(found_ids)} IDs détectés.")
+
+                            if self.first_run:
+                                # On force l'envoi des 3 premières pour confirmer que ça marche
+                                to_send = found_ids[:3]
+                                self.first_run = False
+                                print("MODE TEST : Envoi des premières offres trouvées.")
+                            else:
+                                to_send = [oid for oid in found_ids if oid not in seen_ids]
 
                             for oid in to_send:
                                 if oid in seen_ids: continue
                                 seen_ids.add(oid)
-                                await channel.send(f"📢 **Nouvelle offre VIE !**\nhttps://mon-vie-via.businessfrance.fr/offres/{oid}")
-                                await asyncio.sleep(1)
                                 
-                            print(f"Scan réussi : {len(to_send)} envoyées.")
-                        
-                        elif resp.status == 403 or resp.status == 500:
-                            print(f"Bloqué par Business France (Erreur {resp.status}). Railway est banni.")
-                            # Petit message dans Discord pour te prévenir du blocage
-                            if self.first_run:
-                                await channel.send("⚠️ Le bot est bloqué par le pare-feu de Business France. Je tente une reconnexion...")
-                        
+                                link = f"https://mon-vie-via.businessfrance.fr/offres/{oid}"
+                                await channel.send(f"✅ **Offre trouvée !**\n{link}")
+                                await asyncio.sleep(1)
+                            
+                            if not to_send and not self.first_run:
+                                print("Rien de nouveau pour l'instant.")
+                        else:
+                            print(f"Le proxy a répondu avec l'erreur : {resp.status}")
+
             except Exception as e:
                 print(f"Erreur technique : {e}")
 
+            # Attente de 10 minutes
             await asyncio.sleep(600)
 
 intents = discord.Intents.default()
