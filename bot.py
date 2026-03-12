@@ -5,8 +5,8 @@ import xml.etree.ElementTree as ET
 import os
 from datetime import datetime
 
-DISCORD_TOKEN = os.environ['DISCORD_TOKEN']
-CHANNEL_ID = int(os.environ['CHANNEL_ID'])
+DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '') 
+CHANNEL_ID = int(os.environ.get('CHANNEL_ID', '0'))
 
 # Mots-clés très larges - tout ce qui touche à l'industrie et plus
 KEYWORDS = [
