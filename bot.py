@@ -48,7 +48,8 @@ class VIEBot(discord.Client):
                         if resp.status == 200:
                             html = await resp.text()
                             soup = BeautifulSoup(html, 'html.parser')
-                            offers = soup.find_all('div', class_='v-card') 
+                            offers = soup.find_all('div', class_='v-card')
+                            print(f"Scan réussi : {len(offers)} offres trouvées")
                             
                             for offer in offers:
                                 try:
