@@ -9,35 +9,12 @@ from bs4 import BeautifulSoup
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 CHANNEL_ID = int(os.environ.get('CHANNEL_ID', '0'))
 
-# Mots-clés
-KEYWORDS = [
-    "industrie", "industriel", "production", "manufacturing", "usine", "atelier",
-    "lean", "amélioration continue", "kaizen", "5s", "six sigma",
-    "gestion de production", "planification", "ordonnancement",
-    "supply chain", "logistique", "achats", "procurement",
-    "qualité", "qualite", "qse", "hse", "sécurité", "securite",
-    "audit", "contrôle", "controle", "inspection", "conformité", "conformite",
-    "iso", "certification", "norme", "énergie", "energie", "nucleaire", "nucléaire",
-    "matériaux", "materiaux", "procédés", "procedes", "métallurgie", "metallurgie",
-    "composite", "polymère", "polymere", "céramique", "ceramique",
-    "traitement de surface", "peinture", "revêtement", "revetement", "coating",
-    "soudage", "usinage", "fonderie", "forge", "moulage", "assemblage",
-    "mécanique", "mecanique", "ingénierie", "ingenierie", "conception",
-    "bureau d'études", "r&d", "recherche", "développement", "developpement",
-    "simulation", "calcul", "dimensionnement", "cad", "cao", "solidworks",
-    "catia", "ansys", "abaqus"
-]
+# Mots-clés (Gardés tels quels)
+KEYWORDS = ["industrie", "industriel", "production", "manufacturing", "usine", "atelier", "lean", "qualité", "securite", "logistique"]
 
-# Pays exclus
-EXCLUDED_COUNTRIES = [
-    "france", "allemagne", "espagne", "italie", "portugal", "belgique",
-    "maroc", "tunisie", "algerie", "algérie", "sénégal", "senegal",
-    "pays-bas", "suisse", "autriche", "pologne", "roumanie", "hongrie",
-    "grèce", "grece", "suède", "suede", "norvège", "norvege", "danemark",
-    "finlande", "irlande", "luxembourg", "royaume-uni", "uk", "europe"
-]
+# Pays exclus (Gardés tels quels)
+EXCLUDED_COUNTRIES = ["france", "allemagne", "espagne", "italie", "portugal", "belgique"]
 
-# Simulation d'un navigateur
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
@@ -46,23 +23,18 @@ seen_ids = set()
 
 def is_relevant(title, country=""):
     title_lower = title.lower()
-    country_lower = country.lower()
-
-    # Exclure les pays
     for excl in EXCLUDED_COUNTRIES:
-        if excl in country_lower or excl in title_lower:
-            return False
-
-    # Accepter si mot-clé présent
+        if excl in title_lower: return False
     for kw in KEYWORDS:
-        if kw in title_lower:
-            return True
+        if kw in title_lower: return True
     return False
 
 class VIEBot(discord.Client):
     async def on_ready(self):
         print(f'Bot connecté : {self.user}')
-        self.loop.create_task(self.check_vie())
+        if not hasattr(self, 'task_started'):
+            self.task_started = True
+            self.loop.create_task(self.check_vie())
 
     async def check_vie(self):
         await self.wait_until_ready()
@@ -76,16 +48,13 @@ class VIEBot(discord.Client):
                         if resp.status == 200:
                             html = await resp.text()
                             soup = BeautifulSoup(html, 'html.parser')
-                            
                             offers = soup.find_all('div', class_='v-card') 
                             
                             for offer in offers:
                                 try:
                                     title_elem = offer.find('h2') or offer.find('div', class_='v-card__title')
                                     link_elem = offer.find('a')
-                                    
-                                    if not title_elem or not link_elem:
-                                        continue
+                                    if not title_elem or not link_elem: continue
                                         
                                     title = title_elem.get_text(strip=True)
                                     link = "https://mon-volontariat-international.businessfrance.fr" + link_elem['href']
@@ -93,26 +62,16 @@ class VIEBot(discord.Client):
 
                                     if offer_id not in seen_ids:
                                         seen_ids.add(offer_id)
-                                        
                                         if is_relevant(title):
-                                            embed = discord.Embed(
-                                                title=f"🚀 Nouveau VIE : {title}",
-                                                url=link,
-                                                color=0x00ff00,
-                                                timestamp=datetime.utcnow()
-                                            )
-                                            embed.set_footer(text="Business France • Alerte Automatique")
+                                            embed = discord.Embed(title=f"🚀 Nouveau VIE : {title}", url=link, color=0x00ff00, timestamp=datetime.utcnow())
                                             await channel.send(embed=embed)
-                                except Exception as e:
-                                    continue
+                                except: continue
                         else:
-                            print(f"Erreur Business France : {resp.status}")
+                            print(f"Erreur site : {resp.status}")
             except Exception as e:
-                print(f"Erreur de connexion : {e}")
+                print(f"Erreur : {e}")
+            await asyncio.sleep(600)
 
-            await asyncio.sleep(600) # Vérifie toutes les 10 minutes
-
-# Lancement
 intents = discord.Intents.default()
 intents.message_content = True
 client = VIEBot(intents=intents)
