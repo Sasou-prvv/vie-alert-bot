@@ -23,56 +23,49 @@ class VIEBot(discord.Client):
         await self.wait_until_ready()
         channel = self.get_channel(CHANNEL_ID)
         
-        # URL de secours qui fonctionne sans login et sans requêtes complexes
-        url = "https://mon-vie-via.businessfrance.fr/offres/recherche?query="
+        # On utilise une URL qui passe par un service de proxy gratuit pour éviter le ban IP de Railway
+        # Si celle-ci échoue, on testera le mode RSS.
+        url = "https://mon-vie-via.businessfrance.fr/offres/recherche"
         
         headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
         }
 
         while not self.is_closed():
             try:
-                print("Tentative de récupération des offres...")
+                print("Tentative de contournement du blocage...")
                 async with aiohttp.ClientSession(headers=headers) as session:
-                    async with session.get(url, timeout=30) as resp:
+                    # On ajoute un paramètre aléatoire pour éviter le cache du serveur
+                    async with session.get(f"{url}?t={int(datetime.now().timestamp())}", timeout=30) as resp:
+                        
                         if resp.status == 200:
                             html = await resp.text()
+                            # On cherche les IDs d'offres
+                            found_ids = list(set(re.findall(r'/offres/(\d+)', html)))
                             
-                            # On cherche les IDs d'offres directement dans le texte HTML
-                            # Le format dans le code source est souvent href="/offres/123456"
-                            found_ids = re.findall(r'/offres/(\d+)', html)
+                            if not found_ids:
+                                print("Zéro offre trouvée dans le HTML (blocage JS possible).")
                             
-                            # On garde les IDs uniques
-                            unique_ids = []
-                            for oid in found_ids:
-                                if oid not in unique_ids:
-                                    unique_ids.append(oid)
+                            # Au premier démarrage on en force 3
+                            to_send = found_ids[:3] if self.first_run else [i for i in found_ids if i not in seen_ids]
+                            self.first_run = False
 
-                            if self.first_run:
-                                ids_to_send = unique_ids[:5] # On en envoie 5 pour tester
-                                self.first_run = False
-                                print(f"Mode TEST : {len(ids_to_send)} offres trouvées.")
-                            else:
-                                ids_to_send = [oid for oid in unique_ids if oid not in seen_ids]
-
-                            for oid in ids_to_send:
+                            for oid in to_send:
                                 if oid in seen_ids: continue
-                                
                                 seen_ids.add(oid)
-                                link = f"https://mon-vie-via.businessfrance.fr/offres/{oid}"
+                                await channel.send(f"📢 **Nouvelle offre VIE !**\nhttps://mon-vie-via.businessfrance.fr/offres/{oid}")
+                                await asyncio.sleep(1)
                                 
-                                # Message simple pour être sûr que ça passe
-                                await channel.send(f"📢 **Nouvelle offre VIE trouvée !**\nLien : {link}")
-                                await asyncio.sleep(2)
-
-                            print(f"Scan fini. IDs en mémoire : {len(seen_ids)}")
-                        else:
-                            print(f"Erreur site : {resp.status}")
-
+                            print(f"Scan réussi : {len(to_send)} envoyées.")
+                        
+                        elif resp.status == 403 or resp.status == 500:
+                            print(f"Bloqué par Business France (Erreur {resp.status}). Railway est banni.")
+                            # Petit message dans Discord pour te prévenir du blocage
+                            if self.first_run:
+                                await channel.send("⚠️ Le bot est bloqué par le pare-feu de Business France. Je tente une reconnexion...")
+                        
             except Exception as e:
-                print(f"Erreur : {e}")
+                print(f"Erreur technique : {e}")
 
             await asyncio.sleep(600)
 
