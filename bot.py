@@ -11,8 +11,7 @@ CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL_SECONDS", "300"))
 
 SEEN_IDS = set()
 
-# URL de l'API (nécessite un POST)
-API_URL = "https://mon-vie-via.businessfrance.fr/api/offres/recherche"
+# Headers pour simuler un navigateur et éviter les blocages
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Content-Type": "application/json",
@@ -24,7 +23,6 @@ HEADERS = {
 def format_date(date_str):
     if not date_str: return "N/C"
     try:
-        # Formate 2026-06-01T00:00:00 -> 01/06/2026
         dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
         return dt.strftime("%d/%m/%Y")
     except:
@@ -38,64 +36,61 @@ def build_embed(offer):
     country = offer.get("pays", "N/C")
     duration = offer.get("dureeMois", "N/C")
     
-    # Récupère l'indemnité (5046.14 dans ton PDF)
+    # Récupération propre de l'indemnité (ex: 5046€ pour CAST)
     salary_val = offer.get("indemnite") or offer.get("remuneration")
     salary = f"{int(float(salary_val))} €" if salary_val else "N/C"
     
     date_start = format_date(offer.get("dateDebut"))
-    
     url = f"https://mon-vie-via.businessfrance.fr/offres/{oid}"
     
-    embed = discord.Embed(
-        title=title[:256],
-        url=url,
-        color=0x2b2d31 # Couleur sombre pro
-    )
+    embed = discord.Embed(title=title[:256], url=url, color=0x2b2d31)
     
-    # Disposition en colonnes comme sur ta capture CAST
-    embed.add_field(name="🏢 Entreprise", value=company, inline=True)
-    embed.add_field(name="📅 Durée (mois)", value=duration, inline=True)
+    # Mise en page fidèle au modèle CAST
+    embed.add_field(name="🏢 Entreprise", value=f"**{company}**", inline=True)
+    embed.add_field(name="📅 Durée (mois)", value=str(duration), inline=True)
     embed.add_field(name="🏙️ Ville", value=city, inline=True)
     embed.add_field(name="🌍 Pays", value=country, inline=True)
     embed.add_field(name="💰 Salaire", value=salary, inline=True)
     embed.add_field(name="🚀 Début", value=date_start, inline=True)
     
-    embed.add_field(name="🔗 Lien", value=f"[Voir l'offre sur Business France]({url})", inline=False)
-    
-    embed.set_footer(text=f"FR Alerte VIE • Business France • Aujourd'hui à {datetime.now().strftime('%H:%M')}")
+    embed.add_field(name="🔗 Lien", value=f"[Postuler sur Business France]({url})", inline=False)
+    embed.set_footer(text=f"Alerte VIE • Business France • {datetime.now().strftime('%H:%M')}")
     return embed
 
 async def fetch_offers(session):
-    # Changement CRUCIAL : On utilise un POST avec un body JSON
-    payload = {
-        "page": 1,
-        "nbResultats": 50,
-        "tri": "date"
-    }
-    async with session.post(API_URL, json=payload, headers=HEADERS) as resp:
+    # Utilisation de POST pour éviter l'erreur HTTP 500
+    payload = {"page": 1, "nbResultats": 50, "tri": "date"}
+    url = "https://mon-vie-via.businessfrance.fr/api/offres/recherche"
+    async with session.post(url, json=payload, headers=HEADERS) as resp:
         if resp.status == 200:
             data = await resp.json()
             return data.get("offres", [])
-        else:
-            print(f"⚠️ Erreur API {resp.status}")
-            return []
+        print(f"⚠️ Erreur API {resp.status}")
+        return []
 
-class MyBot(discord.Client):
+class VIEBot(discord.Client):
     async def on_ready(self):
         print(f"✅ Connecté : {self.user}")
         self.loop.create_task(self.check_loop())
 
     async def check_loop(self):
-        channel = self.get_channel(CHANNEL_ID)
+        await self.wait_until_ready()
+        channel = self.get_channel(CHANNEL_ID) or await self.fetch_channel(CHANNEL_ID)
+        
         async with aiohttp.ClientSession() as session:
             while not self.is_closed():
                 print("🔍 Scan API...")
                 try:
                     offers = await fetch_offers(session)
-                    print(f"📊 {len(offers)} offres trouvées.")
+                    print(f"📊 {len(offers)} offres récupérées.")
                     
-                    if not SEEN_IDS: # Initialisation
-                        for o in offers: SEEN_IDS.add(str(o.get("id")))
+                    if not SEEN_IDS:
+                        # Test immédiat au démarrage avec la dernière offre
+                        if offers:
+                            print("🧪 Envoi de l'offre de test...")
+                            await channel.send(content="✅ **Bot Opérationnel** - Dernière offre trouvée :", embed=build_embed(offers[0]))
+                        for o in offers:
+                            SEEN_IDS.add(str(o.get("id")))
                         print("Initialisation terminée.")
                     else:
                         for o in offers:
@@ -109,5 +104,5 @@ class MyBot(discord.Client):
                 
                 await asyncio.sleep(CHECK_INTERVAL)
 
-client = MyBot(intents=discord.Intents.default())
+client = VIEBot(intents=discord.Intents.default())
 client.run(DISCORD_TOKEN)
