@@ -24,7 +24,6 @@ if not CHANNEL_ID_RAW or not CHANNEL_ID_RAW.isdigit():
 CHANNEL_ID = int(CHANNEL_ID_RAW)
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", "60"))
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "20"))
-SEND_STARTUP_TEST = True # Forcé à True pour vérifier que ça marche
 
 SEEN_IDS: set[str] = set()
 SEARCH_URL = "https://mon-vie-via.businessfrance.fr/offres/recherche"
@@ -60,18 +59,15 @@ def _format_french_date(date_str: str) -> str:
 def _extract_business_france_fields(html: str) -> dict[str, str]:
     info: dict[str, str] = {}
     
-    # Correction Localisation : on cherche spécifiquement après "LA MISSION"
-    # et on exclut les balises scripts pour éviter le bug "function(w...)"
+    # Correction Localisation : protection contre le code JS
     mission_match = re.search(r"LA\s+MISSION", html, re.IGNORECASE)
     if mission_match:
-        # On regarde les 500 caractères après "LA MISSION" en ignorant le JS
         fragment = html[mission_match.end() : mission_match.end() + 500]
         # Format attendu : PAYS (VILLE) [cite: 27]
         loc_match = re.search(r"([A-ZÀ-ÖØ-Þ\-\s']{3,})\s*\(([^)]+)\)", fragment)
         if loc_match:
             country = _clean_text(loc_match.group(1))
             city = _clean_text(loc_match.group(2))
-            # Sécurité anti-code JS
             if "function" not in city.lower() and "{" not in city:
                 info["country"] = country
                 info["city"] = city
@@ -91,7 +87,7 @@ def _extract_business_france_fields(html: str) -> dict[str, str]:
     if company_match:
         info["company"] = _clean_text(company_match.group(1))
 
-    # Salaire sans centimes [cite: 30]
+    # Salaire [cite: 30]
     salary_match = re.search(r"REMUNERATION\s+MENSUELLE\s*:\s*([0-9\s\xa0]+)[.,]?[0-9]*\s*€", html, re.IGNORECASE)
     if salary_match:
         clean_sal = re.sub(r"\s+", "", salary_match.group(1))
@@ -108,7 +104,6 @@ class VIEBot(discord.Client):
 
     def _build_offer_embed(self, details: dict[str, str], offer_id: str, is_test: bool = False) -> discord.Embed:
         title = details.get("title", f"Offre VIE #{offer_id}")
-        # Titre propre basé sur le PDF [cite: 15]
         embed = discord.Embed(
             title=f"{'🧪 TEST — ' if is_test else ''}{title}"[:256],
             color=discord.Color.blue(),
@@ -139,34 +134,44 @@ class VIEBot(discord.Client):
     async def check_vie(self):
         await self.wait_until_ready()
         channel = self.get_channel(CHANNEL_ID)
-        first_run = True
+        
+        # --- TEST FORCÉ AU DÉMARRAGE ---
+        # Utilise les données de ton PDF pour confirmer que l'affichage est OK
+        test_details = {
+            "title": "IT Infrastructure & Network Administrator (H/F)",
+            "company": "CAST", "duration": "18", "city": "NEW-YORK -NY-",
+            "country": "ETATS-UNIS", "salary": "5046 €",
+            "start": "01/06/2026", "deadline": "01/12/2027",
+            "url": "https://mon-vie-via.businessfrance.fr/offres/237889"
+        }
+        try:
+            print("✉️ Tentative d'envoi du message de test forcé...")
+            await channel.send(embed=self._build_offer_embed(test_details, "TEST", True))
+        except Exception as e:
+            print(f"❌ Erreur lors de l'envoi du test : {e}")
 
+        first_run = True
         async with aiohttp.ClientSession() as session:
             while not self.is_closed():
                 try:
-                    print(f"🔍 [{datetime.now().strftime('%H:%M:%S')}] Vérification des offres...")
+                    print(f"🔍 [{datetime.now().strftime('%H:%M:%S')}] Scan en cours...")
                     found_ids = await self._extract_offer_ids(session)
                     print(f"📊 {len(found_ids)} offres trouvées sur la page.")
                     
                     if first_run:
-                        # On envoie une offre en test pour confirmer que tout est OK
-                        if found_ids:
-                            print(f"✉️ Envoi d'un message de test (ID: {found_ids[0]})")
-                            details = await self._fetch_offer_details(session, found_ids[0])
-                            await channel.send(embed=self._build_offer_embed(details, found_ids[0], True))
                         SEEN_IDS.update(found_ids)
                         first_run = False
                     else:
                         new_offers = [oid for oid in found_ids if oid not in SEEN_IDS]
                         if new_offers:
-                            print(f"✨ {len(new_offers)} nouvelles offres détectées !")
+                            print(f"✨ {len(new_offers)} nouvelles offres !")
                             for oid in new_offers:
                                 SEEN_IDS.add(oid)
                                 details = await self._fetch_offer_details(session, oid)
                                 await channel.send(embed=self._build_offer_embed(details, oid))
                                 await asyncio.sleep(2)
                         else:
-                            print("😴 Pas de nouvelle offre pour le moment.")
+                            print("😴 Pas de nouvelle offre.")
 
                 except Exception as e:
                     print(f"❌ Erreur: {e}")
@@ -175,7 +180,12 @@ class VIEBot(discord.Client):
 
     async def _fetch_html(self, session: aiohttp.ClientSession, url: str) -> str:
         headers = {"User-Agent": random.choice(USER_AGENTS)}
-        target_url = f"https://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={quote_plus(url)}" if SCRAPERAPI_KEY else url
+        # RÉINTÉGRATION DE LA VARIABLE : render=true pour charger les offres dynamiques
+        if SCRAPERAPI_KEY:
+            target_url = f"https://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={quote_plus(url)}&render=true"
+        else:
+            target_url = url
+            
         async with session.get(target_url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
             return await resp.text()
 
