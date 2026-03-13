@@ -180,13 +180,16 @@ class VIEBot(discord.Client):
         return {k: v for k, v in details.items() if v}
 
     def _format_message(self, details: dict[str, str], offer_id: str) -> str:
-        title = details.get("title", f"Offre VIE #{offer_id}")
-        lines = [f"✅ **Nouvelle offre VIE : {title}**"]
-        if details.get("company"): lines.append(f"🏢 **Entreprise** : {details['company']}")
-        if details.get("location"): lines.append(f"📍 **Lieu** : {details['location']}")
-        lines.append(f"🔗 {details.get('url')}")
-        return "\n".join(lines)
-
+        title = details.get("title", f"Offre VIE #{offer_id}")[:200]
+        lines = [f"🚀 **Nouvelle offre VIE : {title}**"]
+        if details.get("company"): lines.append(f"🏢 **Entreprise** : {details['company'][:100]}")
+        if details.get("location"): lines.append(f"📍 **Lieu** : {details['location'][:100]}")
+        if details.get("duration"): lines.append(f"⏱ **Durée** : {details['duration'][:50]}")
+        if details.get("salary"): lines.append(f"💰 **Salaire** : {details['salary'][:50]}")
+        lines.append(f"🔗 {details.get('url', f'https://mon-vie-via.businessfrance.fr/offres/{offer_id}')}")
+        message = "\n".join(lines)
+        return message[:1900]
+    
     async def check_vie(self):
         await self.wait_until_ready()
         channel = self.get_channel(CHANNEL_ID) or await self.fetch_channel(CHANNEL_ID)
