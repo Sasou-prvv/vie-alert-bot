@@ -1,4 +1,4 @@
-Voici le nouveau import asyncio
+import asyncio
 import os
 import re
 import aiohttp
