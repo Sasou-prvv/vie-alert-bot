@@ -7,7 +7,7 @@ from datetime import datetime
 from html import unescape
 from urllib.parse import quote_plus
 
-import aiohttp
+import aiohttp 
 import discord
 
 # --- CONFIGURATION (Tes variables Railway) ---
