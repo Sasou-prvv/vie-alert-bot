@@ -199,7 +199,12 @@ class VIEBot(discord.Client):
                     
                     if not SEEN_IDS:
                         SEEN_IDS.update(found_ids)
-                        print(f"Initialisation : {len(found_ids)} offres ignorées.")
+                        print(f"Initialisation : {len(found_ids)} offres mémorisées.")
+                        # Envoyer la dernière offre comme test
+                        if found_ids:
+                            latest_id = found_ids[0]
+                            details = await self._fetch_offer_details(session, latest_id)
+                            await channel.send("🧪 **Test de démarrage — dernière offre actuelle :**\n" + self._format_message(details, latest_id))
                     else:
                         new_ids = [oid for oid in found_ids if oid not in SEEN_IDS]
                         for oid in new_ids:
