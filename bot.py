@@ -1,6 +1,8 @@
 import asyncio
+import json
 import os
 import re
+from html import unescape
 from urllib.parse import quote_plus
 
 import aiohttp
@@ -16,7 +18,7 @@ if not CHANNEL_ID_RAW or not CHANNEL_ID_RAW.isdigit():
     raise RuntimeError("CHANNEL_ID est manquant ou invalide (doit être un entier).")
 
 CHANNEL_ID = int(CHANNEL_ID_RAW)
-CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", "600"))
+CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", "60"))
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "30"))
 
 SEEN_IDS: set[str] = set()
@@ -29,11 +31,90 @@ SOURCE_URLS = [
 ]
 
 
-class VIEBot(discord.Client):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.first_run = True
+def _clean_text(value: str) -> str:
+    value = unescape(value)
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
 
+
+def _find_field(html: str, labels: list[str]) -> str | None:
+    for label in labels:
+        patterns = [
+            rf"{label}\s*[:\-]\s*</?[^>]*>?\s*([^<\n\r]+)",
+            rf"{label}\s*[:\-]\s*([^<\n\r]+)",
+            rf'"{label}"\s*[:=]\s*"([^"]+)"',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, html, re.IGNORECASE)
+            if match:
+                value = _clean_text(match.group(1))
+                if value:
+                    return value
+    return None
+
+
+def _extract_json_ld_data(html: str) -> dict[str, str]:
+    info: dict[str, str] = {}
+    scripts = re.findall(
+        r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    for script in scripts:
+        raw = script.strip()
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            continue
+
+        entries = parsed if isinstance(parsed, list) else [parsed]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+
+            title = entry.get("title") or entry.get("name")
+            if isinstance(title, str) and title.strip():
+                info["title"] = title.strip()
+
+            hiring_org = entry.get("hiringOrganization")
+            if isinstance(hiring_org, dict):
+                org_name = hiring_org.get("name")
+                if isinstance(org_name, str) and org_name.strip():
+                    info["company"] = org_name.strip()
+
+            base_salary = entry.get("baseSalary")
+            if isinstance(base_salary, dict):
+                value = base_salary.get("value")
+                if isinstance(value, dict):
+                    salary = value.get("value")
+                    unit = value.get("unitText", "")
+                    if salary is not None:
+                        info["salary"] = f"{salary} {unit}".strip()
+
+            location = entry.get("jobLocation")
+            if isinstance(location, list) and location:
+                location = location[0]
+            if isinstance(location, dict):
+                address = location.get("address")
+                if isinstance(address, dict):
+                    city = address.get("addressLocality")
+                    country = address.get("addressCountry")
+                    composed = " - ".join([v for v in [city, country] if isinstance(v, str) and v.strip()])
+                    if composed:
+                        info["location"] = composed
+
+            valid_through = entry.get("validThrough")
+            if isinstance(valid_through, str) and valid_through.strip():
+                info["deadline"] = valid_through.strip()
+
+    return info
+
+
+class VIEBot(discord.Client):
     async def on_ready(self):
         print(f"Bot connecté : {self.user}")
         self.loop.create_task(self.check_vie())
@@ -78,15 +159,72 @@ class VIEBot(discord.Client):
 
         raise RuntimeError(f"Aucune source exploitable. Dernière erreur: {last_error}")
 
+    async def _fetch_offer_details(self, session: aiohttp.ClientSession, offer_id: str) -> dict[str, str]:
+        offer_url = f"https://mon-vie-via.businessfrance.fr/offres/{offer_id}"
+        sources = [
+            offer_url,
+            f"https://api.allorigins.win/get?url={quote_plus(offer_url)}",
+            f"https://r.jina.ai/http://{offer_url.replace('https://', '')}",
+        ]
+
+        html = ""
+        for source in sources:
+            try:
+                html = await self._fetch_html(session, source)
+                if html:
+                    break
+            except Exception as exc:
+                print(f"Détail KO: {source} -> {exc}")
+
+        details: dict[str, str] = {"url": offer_url}
+        if not html:
+            return details
+
+        details.update(_extract_json_ld_data(html))
+
+        if "title" not in details:
+            title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+            if title_match:
+                details["title"] = _clean_text(title_match.group(1)).replace("| Mon V.I.E/V.I.A", "").strip()
+
+        details["location"] = details.get("location") or _find_field(
+            html, ["Localisation", "Lieu", "Pays", "Ville"]
+        )
+        details["duration"] = _find_field(html, ["Durée", "Duree", "Duration"])
+        details["salary"] = details.get("salary") or _find_field(
+            html, ["Salaire", "Rémunération", "Remuneration", "Indemnité", "Indemnite"]
+        )
+        details["company"] = details.get("company") or _find_field(
+            html, ["Entreprise", "Société", "Societe", "Organisme"]
+        )
+        details["start"] = _find_field(html, ["Date de début", "Date debut", "Début mission", "Start date"])
+
+        return {k: v for k, v in details.items() if v}
+
+    def _format_message(self, details: dict[str, str], offer_id: str) -> str:
+        title = details.get("title", f"Offre VIE #{offer_id}")
+        lines = [f"✅ **Nouvelle offre VIE : {title}**"]
+
+        if details.get("company"):
+            lines.append(f"🏢 **Entreprise** : {details['company']}")
+        if details.get("location"):
+            lines.append(f"📍 **Lieu** : {details['location']}")
+        if details.get("duration"):
+            lines.append(f"⏳ **Durée** : {details['duration']}")
+        if details.get("salary"):
+            lines.append(f"💰 **Salaire / indemnité** : {details['salary']}")
+        if details.get("start"):
+            lines.append(f"🗓️ **Début** : {details['start']}")
+
+        lines.append(f"🔗 {details.get('url', f'https://mon-vie-via.businessfrance.fr/offres/{offer_id}')}")
+        return "\n".join(lines)
+
     async def check_vie(self):
         await self.wait_until_ready()
 
         channel = self.get_channel(CHANNEL_ID)
         if channel is None:
-            try:
-                channel = await self.fetch_channel(CHANNEL_ID)
-            except Exception as exc:
-                raise RuntimeError(f"Impossible de récupérer le channel Discord {CHANNEL_ID}") from exc
+            channel = await self.fetch_channel(CHANNEL_ID)
 
         async with aiohttp.ClientSession() as session:
             while not self.is_closed():
@@ -94,24 +232,19 @@ class VIEBot(discord.Client):
                     print("Vérification des offres...")
                     found_ids = await self._extract_offer_ids(session)
 
-                    if self.first_run:
-                        to_send = found_ids[:3]
-                        self.first_run = False
-                        print("MODE TEST: envoi des 3 premières offres trouvées.")
+                    if not SEEN_IDS:
+                        SEEN_IDS.update(found_ids)
+                        print(f"Initialisation: {len(found_ids)} offres déjà présentes ignorées.")
                     else:
-                        to_send = [oid for oid in found_ids if oid not in SEEN_IDS]
+                        new_ids = [oid for oid in found_ids if oid not in SEEN_IDS]
+                        for oid in new_ids:
+                            SEEN_IDS.add(oid)
+                            details = await self._fetch_offer_details(session, oid)
+                            await channel.send(self._format_message(details, oid))
+                            await asyncio.sleep(1)
 
-                    for oid in to_send:
-                        if oid in SEEN_IDS:
-                            continue
-
-                        SEEN_IDS.add(oid)
-                        link = f"https://mon-vie-via.businessfrance.fr/offres/{oid}"
-                        await channel.send(f"✅ **Offre trouvée !**\n{link}")
-                        await asyncio.sleep(1)
-
-                    if not to_send and not self.first_run:
-                        print("Rien de nouveau pour l'instant.")
+                        if not new_ids:
+                            print("Rien de nouveau pour l'instant.")
 
                 except Exception as exc:
                     print(f"Erreur technique: {exc}")
@@ -122,3 +255,4 @@ class VIEBot(discord.Client):
 intents = discord.Intents.default()
 client = VIEBot(intents=intents)
 client.run(DISCORD_TOKEN)
+
