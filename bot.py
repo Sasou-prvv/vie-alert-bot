@@ -12,7 +12,7 @@ import discord
 
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 CHANNEL_ID_RAW = os.environ.get("CHANNEL_ID")
-SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY")
+SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY") 
 
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN est manquant.")
