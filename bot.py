@@ -535,4 +535,4 @@ class VIEBot(discord.Client):
 
 intents = discord.Intents.default()
 client = VIEBot(intents=intents)
-client.run(DISCORD_TOKEN):
+client.run(DISCORD_TOKEN)
