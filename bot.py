@@ -180,15 +180,64 @@ class VIEBot(discord.Client):
         return {k: v for k, v in details.items() if v}
 
     def _format_message(self, details: dict[str, str], offer_id: str) -> str:
-        title = details.get("title", f"Offre VIE #{offer_id}")[:200]
-        lines = [f"🚀 **Nouvelle offre VIE : {title}**"]
-        if details.get("company"): lines.append(f"🏢 **Entreprise** : {details['company'][:100]}")
-        if details.get("location"): lines.append(f"📍 **Lieu** : {details['location'][:100]}")
-        if details.get("duration"): lines.append(f"⏱ **Durée** : {details['duration'][:50]}")
-        if details.get("salary"): lines.append(f"💰 **Salaire** : {details['salary'][:50]}")
-        lines.append(f"🔗 {details.get('url', f'https://mon-vie-via.businessfrance.fr/offres/{offer_id}')}")
-        message = "\n".join(lines)
-        return message[:1900]
+        # Nettoyage du titre (on enlève le suffixe Business France)
+        title = details.get("title", f"Offre #{offer_id}").split('|')[0].strip()[:150]
+        url = details.get("url", f"https://mon-vie-via.businessfrance.fr/offres/{offer_id}")
+        
+        lines = [f"🚀 **{title}**"]
+        
+        # On vérifie que l'entreprise n'est pas un message d'erreur/sécurité
+        company = details.get("company", "")
+        if company and "find out more" not in company.lower() and "recruiter" not in company.lower():
+            lines.append(f"🏢 {company[:100]}")
+            
+        if details.get("location"):
+            lines.append(f"📍 {details['location'][:100]}")
+        if details.get("duration"):
+            lines.append(f"⏱ {details['duration'][:50]}")
+        if details.get("salary"):
+            lines.append(f"💰 {details['salary'][:50]}")
+            
+        lines.append(f"🔗 {url}")
+        
+        # Sécurité pour Discord (max 2000, donc 1900 pour être large)
+        return "\n".join(lines)[:1900]
+
+    async def _fetch_offer_details(self, session: aiohttp.ClientSession, offer_id: str) -> dict[str, str]:
+        url = f"https://mon-vie-via.businessfrance.fr/offres/{offer_id}"
+        details = {"url": url}
+        try:
+            html = await self._fetch_html(session, url)
+            
+            # Extraction du titre
+            title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
+            if title_match:
+                details["title"] = _clean_text(title_match.group(1))
+
+            # Extraction de l'entreprise après le label "Etablissement"
+            comp_match = re.search(r"ETABLISSEMENT\s*:\s*</b>\s*([^<]+)", html, re.I)
+            if comp_match:
+                details["company"] = _clean_text(comp_match.group(1))
+            else:
+                details["company"] = _find_field(html, ["Entreprise", "Etablissement", "Société"])
+
+            # Localisation
+            details["location"] = _find_field(html, ["Localisation", "Lieu", "Pays"])
+
+            # Rémunération (cherche le montant avec le symbole €)
+            salary_match = re.search(r"REMUNERATION\s*MENSUELLE\s*:\s*</b>\s*([\d\s,.]+€)", html, re.I)
+            if salary_match:
+                details["salary"] = _clean_text(salary_match.group(1))
+
+            # Durée (ex: 18 mois)
+            duration_match = re.search(r"(\d+\s*mois)", html, re.I)
+            if duration_match:
+                details["duration"] = duration_match.group(1)
+
+        except Exception as e:
+            print(f"Erreur détails #{offer_id}: {e}")
+            
+        return details
     
     async def check_vie(self):
         await self.wait_until_ready()
