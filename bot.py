@@ -81,6 +81,45 @@ def _walk_json_values(node):
             yield from _walk_json_values(item)
 
 
+def _looks_like_noise(value: str | None) -> bool:
+    if not value:
+        return True
+
+    text = _clean_text(value)
+    lower = text.lower()
+
+    noise_markers = [
+        "placeholder",
+        "to find out more about this recruiter",
+        "log in or create",
+        "applyoffersimple",
+        "viewnotifications",
+        "interestedin this position",
+        "non-contractual compensation",
+        "{",
+        "}",
+        '":"',
+    ]
+    if any(marker in lower for marker in noise_markers):
+        return True
+
+    # Valeurs absurdement longues = souvent blob JSON/texte de traduction.
+    if len(text) > 120:
+        return True
+
+    return False
+
+
+def _pick_valid_value(obj: dict, keys: list[str]) -> str | None:
+    for key in keys:
+        value = obj.get(key)
+        if isinstance(value, str):
+            cleaned = _clean_text(value)
+            if cleaned and not _looks_like_noise(cleaned):
+                return cleaned
+    return None
+
+
 def _extract_json_ld_data(html: str) -> dict[str, str]:
     info: dict[str, str] = {}
     scripts = re.findall(
@@ -159,53 +198,39 @@ def _extract_next_data(html: str) -> dict[str, str]:
 
     for obj in _walk_json_values(data):
         if "title" not in info:
-            for key in ["title", "intitule", "name", "poste", "jobTitle"]:
-                value = obj.get(key)
-                if isinstance(value, str) and value.strip():
-                    info["title"] = value.strip()
-                    break
+            picked = _pick_valid_value(obj, ["title", "intitule", "name", "poste", "jobTitle"])
+            if picked:
+                info["title"] = picked
 
         if "company" not in info:
-            for key in ["entreprise", "company", "societe", "organizationName", "nomEntreprise"]:
-                value = obj.get(key)
-                if isinstance(value, str) and value.strip():
-                    info["company"] = value.strip()
-                    break
+            picked = _pick_valid_value(obj, ["entreprise", "company", "societe", "organizationName", "nomEntreprise"])
+            if picked:
+                info["company"] = picked
 
         if "location" not in info:
-            for key in ["lieu", "localisation", "ville", "country", "pays", "location"]:
-                value = obj.get(key)
-                if isinstance(value, str) and value.strip():
-                    info["location"] = value.strip()
-                    break
+            picked = _pick_valid_value(obj, ["lieu", "localisation", "ville", "country", "pays", "location"])
+            if picked:
+                info["location"] = picked
 
         if "duration" not in info:
-            for key in ["duree", "duration", "dureeMission", "missionDuration"]:
-                value = obj.get(key)
-                if isinstance(value, str) and value.strip():
-                    info["duration"] = value.strip()
-                    break
+            picked = _pick_valid_value(obj, ["duree", "duration", "dureeMission", "missionDuration"])
+            if picked:
+                info["duration"] = picked
 
         if "salary" not in info:
-            for key in ["salaire", "remuneration", "indemnite", "salary", "compensation"]:
-                value = obj.get(key)
-                if isinstance(value, str) and value.strip():
-                    info["salary"] = value.strip()
-                    break
+            picked = _pick_valid_value(obj, ["salaire", "remuneration", "indemnite", "salary", "compensation"])
+            if picked:
+                info["salary"] = picked
 
         if "start" not in info:
-            for key in ["dateDebut", "startDate", "dateDeDebut", "debutMission"]:
-                value = obj.get(key)
-                if isinstance(value, str) and value.strip():
-                    info["start"] = value.strip()
-                    break
+            picked = _pick_valid_value(obj, ["dateDebut", "startDate", "dateDeDebut", "debutMission"])
+            if picked:
+                info["start"] = picked
 
         if "deadline" not in info:
-            for key in ["dateLimite", "dateCloture", "validThrough", "deadline"]:
-                value = obj.get(key)
-                if isinstance(value, str) and value.strip():
-                    info["deadline"] = value.strip()
-                    break
+            picked = _pick_valid_value(obj, ["dateLimite", "dateCloture", "validThrough", "deadline"])
+            if picked:
+                info["deadline"] = picked
 
     return info
 
@@ -330,6 +355,16 @@ class VIEBot(discord.Client):
         details["company"] = details.get("company") or _find_field(html, ["Entreprise", "Société", "Societe", "Organisme", "Etablissement"])
         details["start"] = details.get("start") or _find_field(html, ["Date de début", "Date debut", "Début mission", "Start date", "Debut"])
         details["deadline"] = details.get("deadline") or _find_field(html, ["Date limite", "Date de clôture", "Date de cloture", "Deadline", "Fin"])
+
+        # Nettoyage final pour éviter les champs "pollués" (placeholders / blobs texte).
+        for key in ["title", "company", "location", "duration", "salary", "start", "deadline"]:
+            value = details.get(key)
+            if isinstance(value, str):
+                cleaned = _clean_text(value)
+                if not cleaned or _looks_like_noise(cleaned):
+                    details.pop(key, None)
+                else:
+                    details[key] = cleaned
 
         city, country = _extract_city_country(details.get("location"))
         if city:
