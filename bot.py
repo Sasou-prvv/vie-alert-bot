@@ -245,7 +245,88 @@ def _extract_city_country(location: str | None) -> tuple[str, str]:
             parts = [p.strip() for p in cleaned.split(sep) if p.strip()]
             if len(parts) >= 2:
                 return parts[0], parts[-1]
+
+    paren_match = re.search(r"([^\(]+)\(([^\)]+)\)", cleaned)
+    if paren_match:
+        left = _clean_text(paren_match.group(1))
+        right = _clean_text(paren_match.group(2))
+        if left and right:
+            return right, left
+
     return cleaned, ""
+
+
+def _extract_business_france_fields(html: str) -> dict[str, str]:
+    """Extraction ciblée sur la structure visible des pages Business France."""
+    info: dict[str, str] = {}
+
+    # Bloc mission: on récupère UNIQUEMENT la 1ère ligne juste sous "LA MISSION".
+    mission_loc = None
+    mission_anchor = re.search(r"LA\s+MISSION", html, re.IGNORECASE)
+    if mission_anchor:
+        tail = html[mission_anchor.end() : mission_anchor.end() + 4000]
+
+        # Priorité aux lignes type "PAYS (VILLE)" (ex: ETATS-UNIS (NEW-YORK -NY-)).
+        paren_line = re.search(r"([A-ZÀ-ÖØ-Þ\-\s']{3,})\s*\(([^\)\n\r]{2,})\)", tail)
+        if paren_line:
+            mission_loc = f"{_clean_text(paren_line.group(1))} ({_clean_text(paren_line.group(2))})"
+
+        # Sinon, prend la première vraie ligne textuelle courte après le titre.
+        if not mission_loc:
+            line_match = re.search(r"(?:\n|\r|<br\s*/?>|</h[1-6]>)+\s*([^<\n\r]{3,120})", tail, re.IGNORECASE)
+            if line_match:
+                candidate = _clean_text(line_match.group(1))
+                # On exclut explicitement les lignes mission (du ... au ..., etc.).
+                if candidate and not re.search(r"\bdu\b.*\bau\b|\bETABLISSEMENT\b|\bREMUNERATION\b", candidate, re.IGNORECASE):
+                    mission_loc = candidate
+
+    if mission_loc and not _looks_like_noise(mission_loc):
+        info["location"] = mission_loc
+
+    # Cas fréquent: "PAYS (VILLE)"
+    base_for_match = info.get("location") or html
+    country_city_match = re.search(r"([^\(\n\r]+)\s*\(([^\)]+)\)", base_for_match)
+    if country_city_match:
+        country = _clean_text(country_city_match.group(1))
+        city = _clean_text(country_city_match.group(2))
+        if country and len(country) > 2:
+            info["country"] = country
+        if city:
+            info["city"] = city
+            if "country" in info:
+                info["location"] = f"{city} - {info['country']}"
+
+    # "du 01 juin 2026 au 01 décembre 2027 (18 mois)"
+    date_range_match = re.search(
+        r"du\s+([0-9]{1,2}\s+\w+\s+[0-9]{4})\s+au\s+([0-9]{1,2}\s+\w+\s+[0-9]{4})\s*\((\d+\s*mois)\)",
+        html,
+        re.IGNORECASE,
+    )
+    if date_range_match:
+        info["start"] = _clean_text(date_range_match.group(1))
+        info["deadline"] = _clean_text(date_range_match.group(2))
+        info["duration"] = _clean_text(date_range_match.group(3))
+
+    # "ETABLISSEMENT : CAST"
+    company_match = re.search(r"ETABLISSEMENT\s*:\s*([^<\n\r]+)", html, re.IGNORECASE)
+    if company_match:
+        info["company"] = _clean_text(company_match.group(1))
+
+    # "REMUNERATION MENSUELLE : 5046,14 €"
+    salary_match = re.search(
+        r"REMUNERATION\s+MENSUELLE\s*:\s*([0-9\s.,]+\s*€)",
+        html,
+        re.IGNORECASE,
+    )
+    if salary_match:
+        info["salary"] = _clean_text(salary_match.group(1))
+
+    # "Date d'expiration : 12 avril 2026"
+    expiration_match = re.search(r"Date d'expiration\s*:\s*([^<\n\r]+)", html, re.IGNORECASE)
+    if expiration_match:
+        info["deadline"] = _clean_text(expiration_match.group(1))
+
+    return {k: v for k, v in info.items() if v and not _looks_like_noise(v)}
 
 
 class VIEBot(discord.Client):
@@ -337,6 +418,10 @@ class VIEBot(discord.Client):
             return details
 
         details.update(_extract_json_ld_data(html))
+        bf_data = _extract_business_france_fields(html)
+        for key, value in bf_data.items():
+            details.setdefault(key, value)
+
         next_data = _extract_next_data(html)
         for key, value in next_data.items():
             details.setdefault(key, value)
@@ -394,6 +479,8 @@ class VIEBot(discord.Client):
         add_field("📅 Durée (mois)", "duration")
         add_field("🏙️ Ville", "city")
         add_field("🌍 Pays", "country")
+        if not details.get("city") and not details.get("country"):
+            add_field("📍 Localisation", "location")
         add_field("💰 Salaire", "salary")
         add_field("🚀 Début", "start")
         add_field("🏁 Fin", "deadline")
