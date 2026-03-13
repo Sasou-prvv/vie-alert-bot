@@ -20,6 +20,7 @@ if not CHANNEL_ID_RAW or not CHANNEL_ID_RAW.isdigit():
 CHANNEL_ID = int(CHANNEL_ID_RAW)
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", "60"))
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "30"))
+SEND_STARTUP_TEST = os.environ.get("SEND_STARTUP_TEST", "1") == "1"
 
 SEEN_IDS: set[str] = set()
 
@@ -201,6 +202,10 @@ def _extract_next_data(html: str) -> dict[str, str]:
 
 
 class VIEBot(discord.Client):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.startup_test_sent = False
+
     async def on_ready(self):
         print(f"Bot connecté : {self.user}")
         self.loop.create_task(self.check_vie())
@@ -302,6 +307,10 @@ class VIEBot(discord.Client):
         title = details.get("title", f"Offre VIE #{offer_id}")
         lines = [f"✅ **Nouvelle offre VIE : {title}**"]
 
+        # Affiche la date de début juste après le titre, comme demandé.
+        if details.get("start"):
+            lines.append(f"🗓️ **Début** : {details['start']}")
+
         if details.get("company"):
             lines.append(f"🏢 **Entreprise** : {details['company']}")
         if details.get("location"):
@@ -310,8 +319,6 @@ class VIEBot(discord.Client):
             lines.append(f"⏳ **Durée** : {details['duration']}")
         if details.get("salary"):
             lines.append(f"💰 **Salaire / indemnité** : {details['salary']}")
-        if details.get("start"):
-            lines.append(f"🗓️ **Début** : {details['start']}")
         if details.get("deadline"):
             lines.append(f"⏰ **Date limite** : {details['deadline']}")
 
@@ -332,8 +339,15 @@ class VIEBot(discord.Client):
                     found_ids = await self._extract_offer_ids(session)
 
                     if not SEEN_IDS:
+                        if found_ids and SEND_STARTUP_TEST and not self.startup_test_sent:
+                            latest_id = found_ids[0]
+                            details = await self._fetch_offer_details(session, latest_id)
+                            await channel.send("🧪 **Test démarrage (dernière annonce actuelle)**\n" + self._format_message(details, latest_id))
+                            self.startup_test_sent = True
+                            await asyncio.sleep(1)
+
                         SEEN_IDS.update(found_ids)
-                        print(f"Initialisation: {len(found_ids)} offres déjà présentes ignorées.")
+                        print(f"Initialisation: {len(found_ids)} offres déjà présentes mémorisées.")
                     else:
                         new_ids = [oid for oid in found_ids if oid not in SEEN_IDS]
                         for oid in new_ids:
