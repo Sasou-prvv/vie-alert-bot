@@ -54,6 +54,16 @@ def _find_field(html: str, labels: list[str]) -> str | None:
     return None
 
 
+def _walk_json_values(node):
+    if isinstance(node, dict):
+        yield node
+        for value in node.values():
+            yield from _walk_json_values(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _walk_json_values(item)
+
+
 def _extract_json_ld_data(html: str) -> dict[str, str]:
     info: dict[str, str] = {}
     scripts = re.findall(
@@ -110,6 +120,75 @@ def _extract_json_ld_data(html: str) -> dict[str, str]:
             valid_through = entry.get("validThrough")
             if isinstance(valid_through, str) and valid_through.strip():
                 info["deadline"] = valid_through.strip()
+
+    return info
+
+
+def _extract_next_data(html: str) -> dict[str, str]:
+    info: dict[str, str] = {}
+    match = re.search(
+        r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return info
+
+    raw = match.group(1).strip()
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return info
+
+    for obj in _walk_json_values(data):
+        if "title" not in info:
+            for key in ["title", "intitule", "name", "poste", "jobTitle"]:
+                value = obj.get(key)
+                if isinstance(value, str) and value.strip():
+                    info["title"] = value.strip()
+                    break
+
+        if "company" not in info:
+            for key in ["entreprise", "company", "societe", "organizationName", "nomEntreprise"]:
+                value = obj.get(key)
+                if isinstance(value, str) and value.strip():
+                    info["company"] = value.strip()
+                    break
+
+        if "location" not in info:
+            for key in ["lieu", "localisation", "ville", "country", "pays", "location"]:
+                value = obj.get(key)
+                if isinstance(value, str) and value.strip():
+                    info["location"] = value.strip()
+                    break
+
+        if "duration" not in info:
+            for key in ["duree", "duration", "dureeMission", "missionDuration"]:
+                value = obj.get(key)
+                if isinstance(value, str) and value.strip():
+                    info["duration"] = value.strip()
+                    break
+
+        if "salary" not in info:
+            for key in ["salaire", "remuneration", "indemnite", "salary", "compensation"]:
+                value = obj.get(key)
+                if isinstance(value, str) and value.strip():
+                    info["salary"] = value.strip()
+                    break
+
+        if "start" not in info:
+            for key in ["dateDebut", "startDate", "dateDeDebut", "debutMission"]:
+                value = obj.get(key)
+                if isinstance(value, str) and value.strip():
+                    info["start"] = value.strip()
+                    break
+
+        if "deadline" not in info:
+            for key in ["dateLimite", "dateCloture", "validThrough", "deadline"]:
+                value = obj.get(key)
+                if isinstance(value, str) and value.strip():
+                    info["deadline"] = value.strip()
+                    break
 
     return info
 
@@ -181,6 +260,9 @@ class VIEBot(discord.Client):
             return details
 
         details.update(_extract_json_ld_data(html))
+        next_data = _extract_next_data(html)
+        for key, value in next_data.items():
+            details.setdefault(key, value)
 
         if "title" not in details:
             title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
@@ -190,14 +272,19 @@ class VIEBot(discord.Client):
         details["location"] = details.get("location") or _find_field(
             html, ["Localisation", "Lieu", "Pays", "Ville"]
         )
-        details["duration"] = _find_field(html, ["Durée", "Duree", "Duration"])
+        details["duration"] = details.get("duration") or _find_field(html, ["Durée", "Duree", "Duration"])
         details["salary"] = details.get("salary") or _find_field(
             html, ["Salaire", "Rémunération", "Remuneration", "Indemnité", "Indemnite"]
         )
         details["company"] = details.get("company") or _find_field(
             html, ["Entreprise", "Société", "Societe", "Organisme"]
         )
-        details["start"] = _find_field(html, ["Date de début", "Date debut", "Début mission", "Start date"])
+        details["start"] = details.get("start") or _find_field(
+            html, ["Date de début", "Date debut", "Début mission", "Start date"]
+        )
+        details["deadline"] = details.get("deadline") or _find_field(
+            html, ["Date limite", "Date de clôture", "Date de cloture", "Deadline"]
+        )
 
         return {k: v for k, v in details.items() if v}
 
@@ -215,6 +302,8 @@ class VIEBot(discord.Client):
             lines.append(f"💰 **Salaire / indemnité** : {details['salary']}")
         if details.get("start"):
             lines.append(f"🗓️ **Début** : {details['start']}")
+        if details.get("deadline"):
+            lines.append(f"⏰ **Date limite** : {details['deadline']}")
 
         lines.append(f"🔗 {details.get('url', f'https://mon-vie-via.businessfrance.fr/offres/{offer_id}')}")
         return "\n".join(lines)
@@ -255,4 +344,3 @@ class VIEBot(discord.Client):
 intents = discord.Intents.default()
 client = VIEBot(intents=intents)
 client.run(DISCORD_TOKEN)
-
