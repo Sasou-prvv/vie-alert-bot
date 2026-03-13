@@ -24,11 +24,18 @@ REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "30"))
 SEEN_IDS: set[str] = set()
 
 SEARCH_URL = "https://mon-vie-via.businessfrance.fr/offres/recherche"
-SOURCE_URLS = [
-    SEARCH_URL,
-    f"https://api.allorigins.win/get?url={quote_plus(SEARCH_URL)}",
-    f"https://r.jina.ai/http://{SEARCH_URL.replace('https://', '')}",
-]
+
+
+def _build_source_urls() -> list[str]:
+    # Ajoute un cache-buster pour éviter les réponses figées sur les proxys miroirs.
+    cache_buster = str(int(asyncio.get_running_loop().time() * 1000))
+    target_url = f"{SEARCH_URL}?_ts={cache_buster}"
+    return [
+        target_url,
+        f"https://api.allorigins.win/raw?url={quote_plus(target_url)}",
+        f"https://api.allorigins.win/get?url={quote_plus(target_url)}",
+        f"https://r.jina.ai/http://{target_url.replace('https://', '')}",
+    ]
 
 
 def _clean_text(value: str) -> str:
@@ -203,7 +210,9 @@ class VIEBot(discord.Client):
             "User-Agent": (
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-            )
+            ),
+            "Cache-Control": "no-cache, no-store, max-age=0",
+            "Pragma": "no-cache",
         }
         timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
         async with session.get(url, headers=headers, timeout=timeout) as resp:
@@ -223,7 +232,8 @@ class VIEBot(discord.Client):
     async def _extract_offer_ids(self, session: aiohttp.ClientSession) -> list[str]:
         last_error = None
 
-        for source in SOURCE_URLS:
+        source_urls = _build_source_urls()
+        for source in source_urls:
             try:
                 html = await self._fetch_html(session, source)
                 found_ids = list(dict.fromkeys(re.findall(r"/offres/(\d+)", html)))
