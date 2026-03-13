@@ -3,7 +3,6 @@ import json
 import os
 import random
 import re
-from datetime import datetime
 from html import unescape
 from urllib.parse import quote_plus
 
@@ -29,7 +28,6 @@ SOURCE_FAILURE_COOLDOWN_SECONDS = int(os.environ.get("SOURCE_FAILURE_COOLDOWN_SE
 SEEN_IDS: set[str] = set()
 SOURCE_FAIL_UNTIL: dict[str, float] = {}
 SEARCH_URL = "https://mon-vie-via.businessfrance.fr/offres/recherche"
-API_SEARCH_URL = "https://mon-vie-via.businessfrance.fr/api/offres/recherche"
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -55,30 +53,6 @@ def _clean_text(value: str) -> str:
     value = re.sub(r"<[^>]+>", " ", value)
     value = re.sub(r"\s+", " ", value)
     return value.strip()
-
-
-def _format_date(value: str | None) -> str:
-    if not value:
-        return ""
-
-    text = _clean_text(value)
-    candidates = [text, text[:19], text[:10]]
-    formats = [
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d",
-        "%d/%m/%Y",
-        "%d %B %Y",
-        "%d %b %Y",
-    ]
-
-    for candidate in candidates:
-        for fmt in formats:
-            try:
-                return datetime.strptime(candidate, fmt).strftime("%d/%m/%Y")
-            except ValueError:
-                continue
-
-    return text
 
 
 def _find_field(html: str, labels: list[str]) -> str | None:
@@ -394,119 +368,6 @@ class VIEBot(discord.Client):
 
             return body
 
-    async def _fetch_offers_api(self, session: aiohttp.ClientSession) -> list[dict]:
-        params = {
-            "page": 1,
-            "nbResultats": 50,
-            "tri": "date",
-        }
-        headers = self._build_headers()
-        headers.update(
-            {
-                "Accept": "application/json, text/plain, */*",
-                "Referer": SEARCH_URL,
-                "Origin": "https://mon-vie-via.businessfrance.fr",
-            }
-        )
-
-        timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
-        async with session.get(API_SEARCH_URL, headers=headers, params=params, timeout=timeout) as resp:
-            body = await resp.text()
-            if resp.status != 200:
-                raise RuntimeError(f"API HTTP {resp.status} | body[:120]={body[:120]!r}")
-
-            data = await resp.json(content_type=None)
-            offers = data.get("offres") or data.get("results") or data.get("data") or []
-            if isinstance(offers, list):
-                return offers
-            return []
-
-    @staticmethod
-    def _api_offer_sort_key(offer: dict) -> tuple:
-        # Trie robuste: date de publication récente d'abord, sinon id décroissant.
-        date_raw = (
-            offer.get("datePublication")
-            or offer.get("publicationDate")
-            or offer.get("createdAt")
-            or offer.get("dateDebut")
-            or ""
-        )
-        date_text = _clean_text(str(date_raw))
-
-        parsed_dt = None
-        for candidate in [date_text, date_text[:19], date_text[:10]]:
-            for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d", "%d/%m/%Y"]:
-                try:
-                    parsed_dt = datetime.strptime(candidate, fmt)
-                    break
-                except ValueError:
-                    continue
-            if parsed_dt is not None:
-                break
-
-        oid = str(offer.get("id") or offer.get("identifiant") or offer.get("reference") or "0")
-        id_num = int(oid) if oid.isdigit() else 0
-        return (parsed_dt or datetime.min, id_num)
-
-    def _details_from_api_offer(self, offer: dict, offer_id: str) -> dict[str, str]:
-        details: dict[str, str] = {
-            "url": f"https://mon-vie-via.businessfrance.fr/offres/{offer_id}",
-        }
-
-        details["title"] = _clean_text(
-            offer.get("intitule")
-            or offer.get("title")
-            or offer.get("poste")
-            or offer.get("titre")
-            or ""
-        )
-
-        company_obj = offer.get("entreprise")
-        if isinstance(company_obj, dict):
-            details["company"] = _clean_text(company_obj.get("nom") or company_obj.get("name") or "")
-        else:
-            details["company"] = _clean_text(
-                str(offer.get("entreprise") or offer.get("nomEntreprise") or offer.get("company") or "")
-            )
-
-        location_obj = offer.get("localisation") or offer.get("lieu") or {}
-        if isinstance(location_obj, dict):
-            details["city"] = _clean_text(location_obj.get("ville") or location_obj.get("city") or location_obj.get("localite") or "")
-            details["country"] = _clean_text(location_obj.get("pays") or location_obj.get("country") or "")
-        else:
-            details["location"] = _clean_text(str(location_obj))
-
-        if not details.get("city"):
-            details["city"] = _clean_text(offer.get("ville") or offer.get("city") or "")
-        if not details.get("country"):
-            details["country"] = _clean_text(offer.get("pays") or offer.get("country") or "")
-
-        details["duration"] = _clean_text(
-            str(offer.get("duree") or offer.get("duration") or offer.get("dureeMission") or "")
-        )
-
-        salary_raw = offer.get("remuneration") or offer.get("salaire") or offer.get("indemnite") or offer.get("salary")
-        salary_text = _clean_text(str(salary_raw or ""))
-        if salary_text and "€" not in salary_text:
-            salary_text = f"{salary_text} €"
-        details["salary"] = salary_text
-
-        details["start"] = _format_date(
-            offer.get("dateDebut") or offer.get("startDate") or offer.get("debut")
-        )
-        details["deadline"] = _format_date(
-            offer.get("dateFin") or offer.get("endDate") or offer.get("fin") or offer.get("dateCloture")
-        )
-
-        if details.get("city") and details.get("country"):
-            details.setdefault("location", f"{details['city']} - {details['country']}")
-        elif details.get("city"):
-            details.setdefault("location", details["city"])
-        elif details.get("country"):
-            details.setdefault("location", details["country"])
-
-        return {k: v for k, v in details.items() if isinstance(v, str) and v.strip()}
-
     async def _extract_offer_ids(self, session: aiohttp.ClientSession) -> list[str]:
         last_error = None
         now = asyncio.get_running_loop().time()
@@ -643,32 +504,12 @@ class VIEBot(discord.Client):
             while not self.is_closed():
                 try:
                     print("Vérification des offres...")
-                    offers_map: dict[str, dict] = {}
-
-                    try:
-                        api_offers = await self._fetch_offers_api(session)
-                        api_offers.sort(key=self._api_offer_sort_key, reverse=True)
-                        for offer in api_offers:
-                            oid = str(offer.get("id") or offer.get("identifiant") or offer.get("reference") or "")
-                            if oid:
-                                offers_map[oid] = offer
-                        print(f"API OK: {len(offers_map)} offres récupérées")
-                    except Exception as api_exc:
-                        print(f"API KO: {api_exc} | fallback scraping")
-
-                    if offers_map:
-                        found_ids = list(offers_map.keys())
-                    else:
-                        found_ids = await self._extract_offer_ids(session)
-                        found_ids = sorted(found_ids, key=lambda x: int(x) if x.isdigit() else 0, reverse=True)
+                    found_ids = await self._extract_offer_ids(session)
 
                     if not SEEN_IDS:
                         if found_ids and SEND_STARTUP_TEST and not self.startup_test_sent:
                             latest_id = found_ids[0]
-                            if latest_id in offers_map:
-                                details = self._details_from_api_offer(offers_map[latest_id], latest_id)
-                            else:
-                                details = await self._fetch_offer_details(session, latest_id)
+                            details = await self._fetch_offer_details(session, latest_id)
                             await channel.send(embed=self._build_offer_embed(details, latest_id, is_test=True))
                             self.startup_test_sent = True
                             await asyncio.sleep(1)
@@ -679,10 +520,7 @@ class VIEBot(discord.Client):
                         new_ids = [oid for oid in found_ids if oid not in SEEN_IDS]
                         for oid in new_ids:
                             SEEN_IDS.add(oid)
-                            if oid in offers_map:
-                                details = self._details_from_api_offer(offers_map[oid], oid)
-                            else:
-                                details = await self._fetch_offer_details(session, oid)
+                            details = await self._fetch_offer_details(session, oid)
                             await channel.send(embed=self._build_offer_embed(details, oid))
                             await asyncio.sleep(1)
 
@@ -697,4 +535,6 @@ class VIEBot(discord.Client):
 
 intents = discord.Intents.default()
 client = VIEBot(intents=intents)
-client.run(DISCORD_TOKEN)
+client.run(DISCORD_TOKEN):  
+    
+   
